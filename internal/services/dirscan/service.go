@@ -80,7 +80,7 @@ type Service struct {
 	progressMu  sync.Mutex
 
 	// Scheduler control
-	schedulerCtx    context.Context
+	schedulerCtx    context.Context //nolint:containedctx // Scheduler lifecycle context
 	schedulerCancel context.CancelFunc
 	schedulerWg     sync.WaitGroup
 
@@ -1286,7 +1286,7 @@ func (s *Service) processSearchee(
 	searcheeSize := CalculateTotalSize(searchee)
 	minSize, maxSize := CalculateSizeRange(searcheeSize, settings.SizeTolerancePercent)
 
-	meta, arrLookupName := s.buildSearcheeMetadata(searchee)
+	meta, arrLookupName := s.buildSearcheeMetadataWithArrLookup(ctx, searchee, l)
 	contentInfo := determineContentInfo(meta, searchee)
 
 	l.Debug().
@@ -1334,7 +1334,8 @@ func (s *Service) processSearchee(
 	return s.tryMatchResults(ctx, dir, searchee, response, minSize, maxSize, contentType, settings, matcher, runID, l), searcheeOutcome{searched: true}
 }
 
-func (s *Service) buildSearcheeMetadata(searchee *Searchee) (meta *SearcheeMetadata, arrLookupName string) {
+// buildSearcheeMetadataWithArrLookup builds searchee metadata and attempts to lookup original filename from arr
+func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, searchee *Searchee, l *zerolog.Logger) (meta *SearcheeMetadata, arrLookupName string) {
 	parsedMeta := s.parser.Parse(searchee.Name)
 	arrLookupName = searchee.Name
 
@@ -1350,6 +1351,54 @@ func (s *Service) buildSearcheeMetadata(searchee *Searchee) (meta *SearcheeMetad
 		return parsedMeta, arrLookupName
 	}
 
+	// Try to get original filename from arr before parsing
+	if s.arrService != nil && contentFile.Path != "" {
+		// Store the disk filename before potentially overwriting with scene name
+		diskFilename := name
+
+		// Do a quick parse to determine content type for arr lookup
+		quickMeta := s.parser.Parse(name)
+		contentInfo := crossseed.DetermineContentType(quickMeta.Release)
+		contentType := normalizeContentType(contentInfo.ContentType)
+
+		// Map to arr ContentType
+		var arrContentType arr.ContentType
+		switch contentType {
+		case "movie":
+			arrContentType = arr.ContentTypeMovie
+		case "tv":
+			arrContentType = arr.ContentTypeTV
+		default:
+			arrContentType = ""
+		}
+
+		if arrContentType != "" {
+			sceneName := s.arrService.LookupOriginalFilename(ctx, contentFile.Path, arrContentType)
+			if sceneName != "" {
+				if l != nil {
+					l.Debug().
+						Str("diskFilename", diskFilename).
+						Str("sceneName", sceneName).
+						Str("filePath", contentFile.Path).
+						Msg("dirscan: using original filename from arr")
+				}
+
+				// Use the scene name for parsing instead
+				arrLookupName = sceneName
+				parsedMeta = s.parser.Parse(sceneName)
+
+				// Also parse the disk file name for fallback metadata
+				fileMeta := s.parser.Parse(diskFilename)
+				if shouldPreferFileMetadata(parsedMeta, fileMeta) {
+					applyFileMetadata(parsedMeta, fileMeta)
+				}
+
+				return parsedMeta, arrLookupName
+			}
+		}
+	}
+
+	// No arr lookup or not found, use regular logic
 	arrLookupName = name
 	fileMeta := s.parser.Parse(name)
 	if shouldPreferFileMetadata(parsedMeta, fileMeta) {

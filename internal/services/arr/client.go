@@ -6,6 +6,7 @@ package arr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,7 +68,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	defer httphelpers.DrainAndClose(resp)
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("authentication failed: invalid API key")
+		return errors.New("authentication failed: invalid API key")
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -82,7 +83,7 @@ func (c *Client) Ping(ctx context.Context) error {
 
 	// Validate we got a valid response with app name
 	if status.AppName == "" {
-		return fmt.Errorf("invalid response: missing appName")
+		return errors.New("invalid response: missing appName")
 	}
 
 	return nil
@@ -117,7 +118,7 @@ func (c *Client) ParseTitle(ctx context.Context, title string) (*models.External
 	defer httphelpers.DrainAndClose(resp)
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("authentication failed: invalid API key")
+		return nil, errors.New("authentication failed: invalid API key")
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -171,4 +172,82 @@ func (c *Client) InstanceType() models.ArrInstanceType {
 // BaseURL returns the base URL this client is configured for
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+// GetMovieFiles retrieves all movie files from Radarr
+// GET /api/v3/moviefile - returns all movie files across all movies
+func (c *Client) GetMovieFiles(ctx context.Context) ([]RadarrMovieFile, error) {
+	if c.instanceType != models.ArrInstanceTypeRadarr {
+		return nil, errors.New("GetMovieFiles is only supported for Radarr instances")
+	}
+
+	endpoint := c.baseURL + "/api/v3/moviefile"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req) //nolint:bodyclose // closed by DrainAndClose
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer httphelpers.DrainAndClose(resp)
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("authentication failed: invalid API key")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var files []RadarrMovieFile
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		return nil, fmt.Errorf("failed to decode movie files response: %w", err)
+	}
+
+	return files, nil
+}
+
+// GetEpisodeFiles retrieves all episode files from Sonarr
+// GET /api/v3/episodefile - returns all episode files across all series
+func (c *Client) GetEpisodeFiles(ctx context.Context) ([]SonarrEpisodeFile, error) {
+	if c.instanceType != models.ArrInstanceTypeSonarr {
+		return nil, errors.New("GetEpisodeFiles is only supported for Sonarr instances")
+	}
+
+	endpoint := c.baseURL + "/api/v3/episodefile"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req) //nolint:bodyclose // closed by DrainAndClose
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer httphelpers.DrainAndClose(resp)
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("authentication failed: invalid API key")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var files []SonarrEpisodeFile
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		return nil, fmt.Errorf("failed to decode episode files response: %w", err)
+	}
+
+	return files, nil
 }

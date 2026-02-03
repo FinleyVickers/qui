@@ -7,10 +7,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/autobrr/qui/internal/models"
 )
@@ -342,6 +344,8 @@ func (s *Service) getArrTypeForContent(contentType ContentType) models.ArrInstan
 		return models.ArrInstanceTypeRadarr
 	case ContentTypeTV, ContentTypeAnime:
 		return models.ArrInstanceTypeSonarr
+	case ContentTypeUnknown:
+		return ""
 	default:
 		return ""
 	}
@@ -398,4 +402,184 @@ func (s *Service) maybeScheduleCacheCleanup() {
 			log.Debug().Int64("deleted", deleted).Msg("[ARR-LOOKUP] Cleaned up expired cache entries")
 		}
 	}()
+}
+
+// FilenameCache stores cached original filenames from Radarr/Sonarr
+type filenameCache struct {
+	mu          sync.RWMutex
+	pathToScene map[string]string // maps file path to original scene name
+	lastFetch   time.Time
+	ttl         time.Duration
+}
+
+const (
+	// DefaultFilenameCacheTTL is the TTL for filename cache
+	// Shorter TTL since files can be added/renamed in *arr
+	DefaultFilenameCacheTTL = 5 * time.Minute
+)
+
+var (
+	// Global filename cache per instance
+	filenameCaches  sync.Map // map[int]*filenameCache - thread-safe map for caches by instance ID
+	filenameFetcher singleflight.Group
+)
+
+// LookupOriginalFilename queries ARR instances to find the original scene name for a file path.
+// It returns the scene name if found, or empty string if not found or on error.
+func (s *Service) LookupOriginalFilename(ctx context.Context, filePath string, contentType ContentType) string {
+	if filePath == "" || s.instanceStore == nil {
+		return ""
+	}
+
+	// Determine which ARR type to query
+	arrType := s.getArrTypeForContent(contentType)
+	if arrType == "" {
+		return ""
+	}
+
+	// Get enabled instances of the appropriate type
+	instances, err := s.instanceStore.ListEnabledByType(ctx, arrType)
+	if err != nil || len(instances) == 0 {
+		return ""
+	}
+
+	// Try each instance in priority order
+	for _, instance := range instances {
+		sceneName := s.lookupFilenameFromInstance(ctx, instance, filePath, arrType)
+		if sceneName != "" {
+			log.Debug().
+				Str("filePath", filePath).
+				Str("sceneName", sceneName).
+				Int("instanceId", instance.ID).
+				Str("instanceName", instance.Name).
+				Msg("[ARR-FILENAME] Found original filename")
+			return sceneName
+		}
+	}
+
+	return ""
+}
+
+// lookupFilenameFromInstance queries a specific ARR instance for the original filename
+func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *models.ArrInstance, filePath string, arrType models.ArrInstanceType) string {
+	if instance == nil {
+		return ""
+	}
+
+	// Get or create cache for this instance
+	var cache *filenameCache
+	cacheVal, exists := filenameCaches.Load(instance.ID)
+	if exists {
+		cache = cacheVal.(*filenameCache)
+		cache.mu.RLock()
+		expired := time.Since(cache.lastFetch) > DefaultFilenameCacheTTL
+		cache.mu.RUnlock()
+
+		if !expired {
+			// Cache is still valid, use it
+			cache.mu.RLock()
+			defer cache.mu.RUnlock()
+			if sceneName, ok := cache.pathToScene[filePath]; ok {
+				return sceneName
+			}
+			return ""
+		}
+	}
+
+	// Cache doesn't exist or is expired - fetch new data using singleflight to prevent duplicate fetches
+	cacheKey := fmt.Sprintf("arr-files-%d", instance.ID)
+	result, err, _ := filenameFetcher.Do(cacheKey, func() (any, error) {
+		apiKey, err := s.instanceStore.GetDecryptedAPIKey(instance)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt API key: %w", err)
+		}
+
+		client := NewClient(instance.BaseURL, apiKey, instance.Type, instance.TimeoutSeconds)
+
+		// Fetch files from ARR
+		var pathToScene map[string]string
+		switch arrType {
+		case models.ArrInstanceTypeRadarr:
+			pathToScene = s.fetchRadarrFilenames(ctx, client)
+		case models.ArrInstanceTypeSonarr:
+			pathToScene = s.fetchSonarrFilenames(ctx, client)
+		default:
+			return nil, fmt.Errorf("unsupported arr type: %s", arrType)
+		}
+
+		// Create new cache entry
+		newCache := &filenameCache{
+			pathToScene: pathToScene,
+			lastFetch:   time.Now(),
+			ttl:         DefaultFilenameCacheTTL,
+		}
+
+		return newCache, nil
+	})
+
+	if err != nil {
+		log.Debug().Err(err).
+			Int("instanceId", instance.ID).
+			Msg("[ARR-FILENAME] Failed to fetch files")
+		return ""
+	}
+
+	cache = result.(*filenameCache)
+	filenameCaches.Store(instance.ID, cache)
+
+	// Look up the file path in cache
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+
+	if sceneName, ok := cache.pathToScene[filePath]; ok {
+		return sceneName
+	}
+
+	return ""
+}
+
+// fetchRadarrFilenames fetches all movie files from Radarr and builds a path->sceneName map
+func (s *Service) fetchRadarrFilenames(ctx context.Context, client *Client) map[string]string {
+	files, err := client.GetMovieFiles(ctx)
+	if err != nil {
+		log.Debug().Err(err).Msg("[ARR-FILENAME] Failed to fetch Radarr movie files")
+		return nil
+	}
+
+	pathToScene := make(map[string]string, len(files))
+	for _, file := range files {
+		if file.SceneName != "" && file.Path != "" {
+			pathToScene[file.Path] = file.SceneName
+		}
+	}
+
+	log.Debug().
+		Int("totalFiles", len(files)).
+		Int("filesWithSceneName", len(pathToScene)).
+		Msg("[ARR-FILENAME] Fetched Radarr movie files")
+
+	return pathToScene
+}
+
+// fetchSonarrFilenames fetches all episode files from Sonarr and builds a path->sceneName map
+func (s *Service) fetchSonarrFilenames(ctx context.Context, client *Client) map[string]string {
+	files, err := client.GetEpisodeFiles(ctx)
+	if err != nil {
+		log.Debug().Err(err).Msg("[ARR-FILENAME] Failed to fetch Sonarr episode files")
+		return nil
+	}
+
+	pathToScene := make(map[string]string, len(files))
+	for _, file := range files {
+		if file.SceneName != "" && file.Path != "" {
+			pathToScene[file.Path] = file.SceneName
+		}
+	}
+
+	log.Debug().
+		Int("totalFiles", len(files)).
+		Int("filesWithSceneName", len(pathToScene)).
+		Msg("[ARR-FILENAME] Fetched Sonarr episode files")
+
+	return pathToScene
 }
