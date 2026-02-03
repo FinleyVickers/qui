@@ -526,10 +526,6 @@ func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *mode
 	filenameCaches.Store(instance.ID, cache)
 
 	// Look up the file path in cache
-	if cache == nil {
-		return ""
-	}
-
 	cache.mu.RLock()
 	defer cache.mu.RUnlock()
 	

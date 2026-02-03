@@ -1378,6 +1378,9 @@ func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, search
 
 	// Try to get original filename from arr before parsing
 	if s.arrService != nil && contentFile.Path != "" {
+		// Store the disk filename before potentially overwriting with scene name
+		diskFilename := name
+		
 		// Do a quick parse to determine content type for arr lookup
 		quickMeta := s.parser.Parse(name)
 		contentInfo := crossseed.DetermineContentType(quickMeta.Release)
@@ -1399,7 +1402,7 @@ func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, search
 			if sceneName != "" {
 				if l != nil {
 					l.Debug().
-						Str("originalName", name).
+						Str("diskFilename", diskFilename).
 						Str("sceneName", sceneName).
 						Str("filePath", contentFile.Path).
 						Msg("dirscan: using original filename from arr")
@@ -1410,9 +1413,8 @@ func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, search
 				arrLookupName = sceneName
 				parsedMeta = s.parser.Parse(sceneName)
 				
-				// Also parse the disk file name for fallback metadata (reuse name variable)
-				diskName := strings.TrimSuffix(base, filepath.Ext(base))
-				fileMeta := s.parser.Parse(diskName)
+				// Also parse the disk file name for fallback metadata
+				fileMeta := s.parser.Parse(diskFilename)
 				if shouldPreferFileMetadata(parsedMeta, fileMeta) {
 					applyFileMetadata(parsedMeta, fileMeta)
 				}
