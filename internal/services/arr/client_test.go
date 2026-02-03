@@ -463,3 +463,229 @@ func TestNewClient_DefaultTimeout(t *testing.T) {
 	// Default timeout should be 15 seconds
 	assert.Equal(t, defaultTimeout, client.timeout)
 }
+
+func TestClient_GetMovieFiles(t *testing.T) {
+	tests := []struct {
+		name         string
+		instanceType models.ArrInstanceType
+		responseCode int
+		responseBody string
+		wantFiles    []RadarrMovieFile
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:         "successful fetch with scene names",
+			instanceType: models.ArrInstanceTypeRadarr,
+			responseCode: http.StatusOK,
+			responseBody: `[
+				{
+					"id": 1,
+					"movieId": 100,
+					"relativePath": "Movie.Title.2024.1080p.BluRay.x264-GROUP.mkv",
+					"path": "/movies/Movie Title (2024)/Movie.Title.2024.1080p.BluRay.x264-GROUP.mkv",
+					"size": 8589934592,
+					"sceneName": "Movie.Title.2024.1080p.BluRay.x264-GROUP"
+				},
+				{
+					"id": 2,
+					"movieId": 101,
+					"relativePath": "Another.Movie.2023.2160p.WEB-DL.x265-TEAM.mkv",
+					"path": "/movies/Another Movie (2023)/Another.Movie.2023.2160p.WEB-DL.x265-TEAM.mkv",
+					"size": 17179869184,
+					"sceneName": "Another.Movie.2023.2160p.WEB-DL.x265-TEAM"
+				}
+			]`,
+			wantFiles: []RadarrMovieFile{
+				{
+					ID:           1,
+					MovieID:      100,
+					RelativePath: "Movie.Title.2024.1080p.BluRay.x264-GROUP.mkv",
+					Path:         "/movies/Movie Title (2024)/Movie.Title.2024.1080p.BluRay.x264-GROUP.mkv",
+					Size:         8589934592,
+					SceneName:    "Movie.Title.2024.1080p.BluRay.x264-GROUP",
+				},
+				{
+					ID:           2,
+					MovieID:      101,
+					RelativePath: "Another.Movie.2023.2160p.WEB-DL.x265-TEAM.mkv",
+					Path:         "/movies/Another Movie (2023)/Another.Movie.2023.2160p.WEB-DL.x265-TEAM.mkv",
+					Size:         17179869184,
+					SceneName:    "Another.Movie.2023.2160p.WEB-DL.x265-TEAM",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:         "empty result",
+			instanceType: models.ArrInstanceTypeRadarr,
+			responseCode: http.StatusOK,
+			responseBody: `[]`,
+			wantFiles:    []RadarrMovieFile{},
+			wantErr:      false,
+		},
+		{
+			name:         "unauthorized",
+			instanceType: models.ArrInstanceTypeRadarr,
+			responseCode: http.StatusUnauthorized,
+			responseBody: `{"error":"Unauthorized"}`,
+			wantErr:      true,
+			errContains:  "authentication failed",
+		},
+		{
+			name:         "wrong instance type",
+			instanceType: models.ArrInstanceTypeSonarr,
+			wantErr:      true,
+			errContains:  "only supported for Radarr",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var server *httptest.Server
+			if tt.instanceType == models.ArrInstanceTypeRadarr && tt.responseCode > 0 {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					assert.Equal(t, "/api/v3/moviefile", r.URL.Path)
+					assert.Equal(t, "test-api-key", r.Header.Get("X-Api-Key"))
+					w.WriteHeader(tt.responseCode)
+					_, _ = w.Write([]byte(tt.responseBody))
+				}))
+				defer server.Close()
+			}
+
+			var client *Client
+			if server != nil {
+				client = NewClient(server.URL, "test-api-key", tt.instanceType, 15)
+			} else {
+				client = NewClient("http://localhost:7878", "test-api-key", tt.instanceType, 15)
+			}
+
+			files, err := client.GetMovieFiles(context.Background())
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantFiles, files)
+			}
+		})
+	}
+}
+
+func TestClient_GetEpisodeFiles(t *testing.T) {
+	tests := []struct {
+		name         string
+		instanceType models.ArrInstanceType
+		responseCode int
+		responseBody string
+		wantFiles    []SonarrEpisodeFile
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:         "successful fetch with scene names",
+			instanceType: models.ArrInstanceTypeSonarr,
+			responseCode: http.StatusOK,
+			responseBody: `[
+				{
+					"id": 1,
+					"seriesId": 200,
+					"seasonNumber": 1,
+					"relativePath": "Season 01/Show.Name.S01E01.720p.HDTV.x264-GROUP.mkv",
+					"path": "/tv/Show Name/Season 01/Show.Name.S01E01.720p.HDTV.x264-GROUP.mkv",
+					"size": 1073741824,
+					"sceneName": "Show.Name.S01E01.720p.HDTV.x264-GROUP"
+				},
+				{
+					"id": 2,
+					"seriesId": 200,
+					"seasonNumber": 1,
+					"relativePath": "Season 01/Show.Name.S01E02.720p.HDTV.x264-GROUP.mkv",
+					"path": "/tv/Show Name/Season 01/Show.Name.S01E02.720p.HDTV.x264-GROUP.mkv",
+					"size": 1073741824,
+					"sceneName": "Show.Name.S01E02.720p.HDTV.x264-GROUP"
+				}
+			]`,
+			wantFiles: []SonarrEpisodeFile{
+				{
+					ID:           1,
+					SeriesID:     200,
+					SeasonNumber: 1,
+					RelativePath: "Season 01/Show.Name.S01E01.720p.HDTV.x264-GROUP.mkv",
+					Path:         "/tv/Show Name/Season 01/Show.Name.S01E01.720p.HDTV.x264-GROUP.mkv",
+					Size:         1073741824,
+					SceneName:    "Show.Name.S01E01.720p.HDTV.x264-GROUP",
+				},
+				{
+					ID:           2,
+					SeriesID:     200,
+					SeasonNumber: 1,
+					RelativePath: "Season 01/Show.Name.S01E02.720p.HDTV.x264-GROUP.mkv",
+					Path:         "/tv/Show Name/Season 01/Show.Name.S01E02.720p.HDTV.x264-GROUP.mkv",
+					Size:         1073741824,
+					SceneName:    "Show.Name.S01E02.720p.HDTV.x264-GROUP",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:         "empty result",
+			instanceType: models.ArrInstanceTypeSonarr,
+			responseCode: http.StatusOK,
+			responseBody: `[]`,
+			wantFiles:    []SonarrEpisodeFile{},
+			wantErr:      false,
+		},
+		{
+			name:         "unauthorized",
+			instanceType: models.ArrInstanceTypeSonarr,
+			responseCode: http.StatusUnauthorized,
+			responseBody: `{"error":"Unauthorized"}`,
+			wantErr:      true,
+			errContains:  "authentication failed",
+		},
+		{
+			name:         "wrong instance type",
+			instanceType: models.ArrInstanceTypeRadarr,
+			wantErr:      true,
+			errContains:  "only supported for Sonarr",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var server *httptest.Server
+			if tt.instanceType == models.ArrInstanceTypeSonarr && tt.responseCode > 0 {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					assert.Equal(t, "/api/v3/episodefile", r.URL.Path)
+					assert.Equal(t, "test-api-key", r.Header.Get("X-Api-Key"))
+					w.WriteHeader(tt.responseCode)
+					_, _ = w.Write([]byte(tt.responseBody))
+				}))
+				defer server.Close()
+			}
+
+			var client *Client
+			if server != nil {
+				client = NewClient(server.URL, "test-api-key", tt.instanceType, 15)
+			} else {
+				client = NewClient("http://localhost:8989", "test-api-key", tt.instanceType, 15)
+			}
+
+			files, err := client.GetEpisodeFiles(context.Background())
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantFiles, files)
+			}
+		})
+	}
+}
