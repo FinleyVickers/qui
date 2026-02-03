@@ -130,3 +130,26 @@ func (r *RadarrParseResponse) ExtractExternalIDs() *models.ExternalIDs {
 
 	return ids
 }
+
+// RadarrMovieFile represents a movie file in Radarr from /api/v3/moviefile endpoint
+type RadarrMovieFile struct {
+	ID           int    `json:"id"`
+	MovieID      int    `json:"movieId"`
+	RelativePath string `json:"relativePath"`
+	Path         string `json:"path"`
+	Size         int64  `json:"size"`
+	SceneName    string `json:"sceneName"`
+	Quality      any    `json:"quality"`
+}
+
+// SonarrEpisodeFile represents an episode file in Sonarr from /api/v3/episodefile endpoint
+type SonarrEpisodeFile struct {
+	ID           int    `json:"id"`
+	SeriesID     int    `json:"seriesId"`
+	SeasonNumber int    `json:"seasonNumber"`
+	RelativePath string `json:"relativePath"`
+	Path         string `json:"path"`
+	Size         int64  `json:"size"`
+	SceneName    string `json:"sceneName"`
+	Quality      any    `json:"quality"`
+}

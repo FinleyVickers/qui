@@ -1286,7 +1286,7 @@ func (s *Service) processSearchee(
 	searcheeSize := CalculateTotalSize(searchee)
 	minSize, maxSize := CalculateSizeRange(searcheeSize, settings.SizeTolerancePercent)
 
-	meta, arrLookupName := s.buildSearcheeMetadata(searchee)
+	meta, arrLookupName := s.buildSearcheeMetadataWithArrLookup(ctx, searchee, l)
 	contentInfo := determineContentInfo(meta, searchee)
 
 	l.Debug().
@@ -1350,6 +1350,78 @@ func (s *Service) buildSearcheeMetadata(searchee *Searchee) (meta *SearcheeMetad
 		return parsedMeta, arrLookupName
 	}
 
+	arrLookupName = name
+	fileMeta := s.parser.Parse(name)
+	if shouldPreferFileMetadata(parsedMeta, fileMeta) {
+		applyFileMetadata(parsedMeta, fileMeta)
+	}
+
+	return parsedMeta, arrLookupName
+}
+
+// buildSearcheeMetadataWithArrLookup builds searchee metadata and attempts to lookup original filename from arr
+func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, searchee *Searchee, l *zerolog.Logger) (meta *SearcheeMetadata, arrLookupName string) {
+	parsedMeta := s.parser.Parse(searchee.Name)
+	arrLookupName = searchee.Name
+
+	// Prefer the largest video file name for content detection (mirrors cross-seed's "largest file" heuristic).
+	contentFile := selectLargestVideoFile(searchee.Files)
+	if contentFile == nil {
+		return parsedMeta, arrLookupName
+	}
+
+	base := filepath.Base(contentFile.Path)
+	name := strings.TrimSuffix(base, filepath.Ext(base))
+	if name == "" {
+		return parsedMeta, arrLookupName
+	}
+
+	// Try to get original filename from arr before parsing
+	if s.arrService != nil && contentFile.Path != "" {
+		// Do a quick parse to determine content type for arr lookup
+		quickMeta := s.parser.Parse(name)
+		contentInfo := crossseed.DetermineContentType(quickMeta.Release)
+		contentType := normalizeContentType(contentInfo.ContentType)
+		
+		// Map to arr ContentType
+		var arrContentType arr.ContentType
+		switch contentType {
+		case "movie":
+			arrContentType = arr.ContentTypeMovie
+		case "tv":
+			arrContentType = arr.ContentTypeTV
+		default:
+			arrContentType = ""
+		}
+
+		if arrContentType != "" {
+			sceneName := s.arrService.LookupOriginalFilename(ctx, contentFile.Path, arrContentType)
+			if sceneName != "" {
+				if l != nil {
+					l.Debug().
+						Str("originalName", name).
+						Str("sceneName", sceneName).
+						Str("filePath", contentFile.Path).
+						Msg("dirscan: using original filename from arr")
+				}
+				
+				// Use the scene name for parsing instead
+				name = sceneName
+				arrLookupName = sceneName
+				parsedMeta = s.parser.Parse(sceneName)
+				
+				// Also parse the file name for fallback
+				fileMeta := s.parser.Parse(base[:len(base)-len(filepath.Ext(base))])
+				if shouldPreferFileMetadata(parsedMeta, fileMeta) {
+					applyFileMetadata(parsedMeta, fileMeta)
+				}
+				
+				return parsedMeta, arrLookupName
+			}
+		}
+	}
+
+	// No arr lookup or not found, use regular logic
 	arrLookupName = name
 	fileMeta := s.parser.Parse(name)
 	if shouldPreferFileMetadata(parsedMeta, fileMeta) {
