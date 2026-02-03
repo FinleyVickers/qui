@@ -1410,8 +1410,9 @@ func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, search
 				arrLookupName = sceneName
 				parsedMeta = s.parser.Parse(sceneName)
 				
-				// Also parse the file name for fallback
-				fileMeta := s.parser.Parse(base[:len(base)-len(filepath.Ext(base))])
+				// Also parse the disk file name for fallback metadata (reuse name variable)
+				diskName := strings.TrimSuffix(base, filepath.Ext(base))
+				fileMeta := s.parser.Parse(diskName)
 				if shouldPreferFileMetadata(parsedMeta, fileMeta) {
 					applyFileMetadata(parsedMeta, fileMeta)
 				}

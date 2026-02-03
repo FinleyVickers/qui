@@ -7,10 +7,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/autobrr/qui/internal/models"
 )
@@ -416,8 +418,8 @@ const (
 
 var (
 	// Global filename cache per instance
-	filenameCaches   = make(map[int]*filenameCache)
-	filenameCacheMu  sync.Mutex
+	filenameCaches  sync.Map // map[int]*filenameCache - thread-safe map for caches by instance ID
+	filenameFetcher singleflight.Group
 )
 
 // LookupOriginalFilename queries ARR instances to find the original scene name for a file path.
@@ -463,18 +465,31 @@ func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *mode
 	}
 
 	// Get or create cache for this instance
-	filenameCacheMu.Lock()
-	cache, exists := filenameCaches[instance.ID]
-	if !exists || time.Since(cache.lastFetch) > DefaultFilenameCacheTTL {
-		// Need to refresh cache
-		filenameCacheMu.Unlock()
+	var cache *filenameCache
+	cacheVal, exists := filenameCaches.Load(instance.ID)
+	if exists {
+		cache = cacheVal.(*filenameCache)
+		cache.mu.RLock()
+		expired := time.Since(cache.lastFetch) > DefaultFilenameCacheTTL
+		cache.mu.RUnlock()
 		
+		if !expired {
+			// Cache is still valid, use it
+			cache.mu.RLock()
+			defer cache.mu.RUnlock()
+			if sceneName, ok := cache.pathToScene[filePath]; ok {
+				return sceneName
+			}
+			return ""
+		}
+	}
+
+	// Cache doesn't exist or is expired - fetch new data using singleflight to prevent duplicate fetches
+	cacheKey := fmt.Sprintf("arr-files-%d", instance.ID)
+	result, err, _ := filenameFetcher.Do(cacheKey, func() (interface{}, error) {
 		apiKey, err := s.instanceStore.GetDecryptedAPIKey(instance)
 		if err != nil {
-			log.Debug().Err(err).
-				Int("instanceId", instance.ID).
-				Msg("[ARR-FILENAME] Failed to decrypt API key")
-			return ""
+			return nil, fmt.Errorf("decrypt API key: %w", err)
 		}
 
 		client := NewClient(instance.BaseURL, apiKey, instance.Type, instance.TimeoutSeconds)
@@ -487,21 +502,28 @@ func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *mode
 		case models.ArrInstanceTypeSonarr:
 			pathToScene = s.fetchSonarrFilenames(ctx, client)
 		default:
-			return ""
+			return nil, fmt.Errorf("unsupported arr type: %s", arrType)
 		}
 
-		// Update cache
-		filenameCacheMu.Lock()
-		filenameCaches[instance.ID] = &filenameCache{
+		// Create new cache entry
+		newCache := &filenameCache{
 			pathToScene: pathToScene,
 			lastFetch:   time.Now(),
 			ttl:         DefaultFilenameCacheTTL,
 		}
-		cache = filenameCaches[instance.ID]
-		filenameCacheMu.Unlock()
-	} else {
-		filenameCacheMu.Unlock()
+		
+		return newCache, nil
+	})
+
+	if err != nil {
+		log.Debug().Err(err).
+			Int("instanceId", instance.ID).
+			Msg("[ARR-FILENAME] Failed to fetch files")
+		return ""
 	}
+
+	cache = result.(*filenameCache)
+	filenameCaches.Store(instance.ID, cache)
 
 	// Look up the file path in cache
 	if cache == nil {
