@@ -47,7 +47,7 @@ func TestInjector_Inject_RollsBackLinkTreeOnAddFailure(t *testing.T) {
 		t.Fatalf("mkdir source: %v", err)
 	}
 	sourceFile := filepath.Join(sourceDir, "file.mkv")
-	if err := os.WriteFile(sourceFile, []byte("data"), 0o644); err != nil {
+	if err := os.WriteFile(sourceFile, []byte("data"), 0o600); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
 

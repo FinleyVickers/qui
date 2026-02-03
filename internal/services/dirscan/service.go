@@ -80,7 +80,7 @@ type Service struct {
 	progressMu  sync.Mutex
 
 	// Scheduler control
-	schedulerCtx    context.Context
+	schedulerCtx    context.Context //nolint:containedctx // Scheduler lifecycle context
 	schedulerCancel context.CancelFunc
 	schedulerWg     sync.WaitGroup
 
@@ -1334,31 +1334,6 @@ func (s *Service) processSearchee(
 	return s.tryMatchResults(ctx, dir, searchee, response, minSize, maxSize, contentType, settings, matcher, runID, l), searcheeOutcome{searched: true}
 }
 
-func (s *Service) buildSearcheeMetadata(searchee *Searchee) (meta *SearcheeMetadata, arrLookupName string) {
-	parsedMeta := s.parser.Parse(searchee.Name)
-	arrLookupName = searchee.Name
-
-	// Prefer the largest video file name for content detection (mirrors cross-seed's "largest file" heuristic).
-	contentFile := selectLargestVideoFile(searchee.Files)
-	if contentFile == nil {
-		return parsedMeta, arrLookupName
-	}
-
-	base := filepath.Base(contentFile.Path)
-	name := strings.TrimSuffix(base, filepath.Ext(base))
-	if name == "" {
-		return parsedMeta, arrLookupName
-	}
-
-	arrLookupName = name
-	fileMeta := s.parser.Parse(name)
-	if shouldPreferFileMetadata(parsedMeta, fileMeta) {
-		applyFileMetadata(parsedMeta, fileMeta)
-	}
-
-	return parsedMeta, arrLookupName
-}
-
 // buildSearcheeMetadataWithArrLookup builds searchee metadata and attempts to lookup original filename from arr
 func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, searchee *Searchee, l *zerolog.Logger) (meta *SearcheeMetadata, arrLookupName string) {
 	parsedMeta := s.parser.Parse(searchee.Name)
@@ -1380,12 +1355,12 @@ func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, search
 	if s.arrService != nil && contentFile.Path != "" {
 		// Store the disk filename before potentially overwriting with scene name
 		diskFilename := name
-		
+
 		// Do a quick parse to determine content type for arr lookup
 		quickMeta := s.parser.Parse(name)
 		contentInfo := crossseed.DetermineContentType(quickMeta.Release)
 		contentType := normalizeContentType(contentInfo.ContentType)
-		
+
 		// Map to arr ContentType
 		var arrContentType arr.ContentType
 		switch contentType {
@@ -1407,18 +1382,17 @@ func (s *Service) buildSearcheeMetadataWithArrLookup(ctx context.Context, search
 						Str("filePath", contentFile.Path).
 						Msg("dirscan: using original filename from arr")
 				}
-				
+
 				// Use the scene name for parsing instead
-				name = sceneName
 				arrLookupName = sceneName
 				parsedMeta = s.parser.Parse(sceneName)
-				
+
 				// Also parse the disk file name for fallback metadata
 				fileMeta := s.parser.Parse(diskFilename)
 				if shouldPreferFileMetadata(parsedMeta, fileMeta) {
 					applyFileMetadata(parsedMeta, fileMeta)
 				}
-				
+
 				return parsedMeta, arrLookupName
 			}
 		}

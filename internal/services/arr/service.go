@@ -344,6 +344,8 @@ func (s *Service) getArrTypeForContent(contentType ContentType) models.ArrInstan
 		return models.ArrInstanceTypeRadarr
 	case ContentTypeTV, ContentTypeAnime:
 		return models.ArrInstanceTypeSonarr
+	case ContentTypeUnknown:
+		return ""
 	default:
 		return ""
 	}
@@ -472,7 +474,7 @@ func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *mode
 		cache.mu.RLock()
 		expired := time.Since(cache.lastFetch) > DefaultFilenameCacheTTL
 		cache.mu.RUnlock()
-		
+
 		if !expired {
 			// Cache is still valid, use it
 			cache.mu.RLock()
@@ -486,14 +488,14 @@ func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *mode
 
 	// Cache doesn't exist or is expired - fetch new data using singleflight to prevent duplicate fetches
 	cacheKey := fmt.Sprintf("arr-files-%d", instance.ID)
-	result, err, _ := filenameFetcher.Do(cacheKey, func() (interface{}, error) {
+	result, err, _ := filenameFetcher.Do(cacheKey, func() (any, error) {
 		apiKey, err := s.instanceStore.GetDecryptedAPIKey(instance)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt API key: %w", err)
 		}
 
 		client := NewClient(instance.BaseURL, apiKey, instance.Type, instance.TimeoutSeconds)
-		
+
 		// Fetch files from ARR
 		var pathToScene map[string]string
 		switch arrType {
@@ -511,7 +513,7 @@ func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *mode
 			lastFetch:   time.Now(),
 			ttl:         DefaultFilenameCacheTTL,
 		}
-		
+
 		return newCache, nil
 	})
 
@@ -528,7 +530,7 @@ func (s *Service) lookupFilenameFromInstance(ctx context.Context, instance *mode
 	// Look up the file path in cache
 	cache.mu.RLock()
 	defer cache.mu.RUnlock()
-	
+
 	if sceneName, ok := cache.pathToScene[filePath]; ok {
 		return sceneName
 	}

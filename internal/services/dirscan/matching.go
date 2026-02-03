@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/anacrolix/torrent/metainfo"
+
 	"github.com/autobrr/qui/pkg/stringutils"
 )
 

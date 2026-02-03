@@ -6,6 +6,7 @@ package arr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,7 +68,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	defer httphelpers.DrainAndClose(resp)
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("authentication failed: invalid API key")
+		return errors.New("authentication failed: invalid API key")
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -82,7 +83,7 @@ func (c *Client) Ping(ctx context.Context) error {
 
 	// Validate we got a valid response with app name
 	if status.AppName == "" {
-		return fmt.Errorf("invalid response: missing appName")
+		return errors.New("invalid response: missing appName")
 	}
 
 	return nil
@@ -117,7 +118,7 @@ func (c *Client) ParseTitle(ctx context.Context, title string) (*models.External
 	defer httphelpers.DrainAndClose(resp)
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("authentication failed: invalid API key")
+		return nil, errors.New("authentication failed: invalid API key")
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -177,7 +178,7 @@ func (c *Client) BaseURL() string {
 // GET /api/v3/moviefile - returns all movie files across all movies
 func (c *Client) GetMovieFiles(ctx context.Context) ([]RadarrMovieFile, error) {
 	if c.instanceType != models.ArrInstanceTypeRadarr {
-		return nil, fmt.Errorf("GetMovieFiles is only supported for Radarr instances")
+		return nil, errors.New("GetMovieFiles is only supported for Radarr instances")
 	}
 
 	endpoint := c.baseURL + "/api/v3/moviefile"
@@ -196,7 +197,7 @@ func (c *Client) GetMovieFiles(ctx context.Context) ([]RadarrMovieFile, error) {
 	defer httphelpers.DrainAndClose(resp)
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("authentication failed: invalid API key")
+		return nil, errors.New("authentication failed: invalid API key")
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -216,7 +217,7 @@ func (c *Client) GetMovieFiles(ctx context.Context) ([]RadarrMovieFile, error) {
 // GET /api/v3/episodefile - returns all episode files across all series
 func (c *Client) GetEpisodeFiles(ctx context.Context) ([]SonarrEpisodeFile, error) {
 	if c.instanceType != models.ArrInstanceTypeSonarr {
-		return nil, fmt.Errorf("GetEpisodeFiles is only supported for Sonarr instances")
+		return nil, errors.New("GetEpisodeFiles is only supported for Sonarr instances")
 	}
 
 	endpoint := c.baseURL + "/api/v3/episodefile"
@@ -235,7 +236,7 @@ func (c *Client) GetEpisodeFiles(ctx context.Context) ([]SonarrEpisodeFile, erro
 	defer httphelpers.DrainAndClose(resp)
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("authentication failed: invalid API key")
+		return nil, errors.New("authentication failed: invalid API key")
 	}
 
 	if resp.StatusCode != http.StatusOK {
